@@ -3,7 +3,6 @@ import { createServer } from 'http';
 import { Server } from 'socket.io';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { createServer as createViteServer } from 'vite';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -18,7 +17,7 @@ async function startServer() {
     }
   });
 
-  const PORT = 3000;
+  const PORT = process.env.PORT || 7860;
 
   // Mock Data Store
   let emergencies: any[] = [
@@ -28,13 +27,13 @@ async function startServer() {
       subtype: 'Cardiac Arrest',
       status: 'In Progress',
       priority: 'Critical',
-      location: [12.9716, 77.5946], // Bangalore
+      location: [12.9716, 77.5946],
       locationName: 'Vittal Mallya Road',
       urgencyScore: 0.95,
       timestamp: new Date(Date.now() - 1000 * 60 * 15).toISOString(),
       citizen: 'Rahul S.',
       assignedResource: 'AMB-12',
-      assignedHospital: 'St. John’s Medical College',
+      assignedHospital: 'St. John Medical College',
       casualties: 1,
       symptoms: ['Unresponsive', 'No Pulse', 'Chest Pain'],
       timeline: [
@@ -104,7 +103,7 @@ async function startServer() {
   let hospitals = [
     {
       id: 'HOS-01',
-      name: 'St. John’s Medical College',
+      name: 'St. John Medical College',
       type: 'Medical College',
       location: [12.9716, 77.5946],
       icuBeds: 45,
@@ -216,7 +215,6 @@ async function startServer() {
 
   app.post('/api/traffic/green-corridor', (req, res) => {
     const { route, ambulanceId } = req.body;
-    // Simulate signaling traffic nodes
     io.emit('traffic:green-corridor', { ambulanceId, route, status: 'Active' });
     res.json({ success: true, message: 'Green corridor activated for route.' });
   });
@@ -228,21 +226,17 @@ async function startServer() {
     const resourceIndex = resources.findIndex(r => r.id === resourceId);
 
     if (index !== -1 && resourceIndex !== -1) {
-      // Update emergency
       const timelineEvent = { time: new Date().toISOString(), event: `Unit ${resourceId} dispatched to scene` };
-      emergencies[index] = { 
-        ...emergencies[index], 
+      emergencies[index] = {
+        ...emergencies[index],
         assignedResource: resourceId,
         status: 'Dispatched',
         timeline: [...(emergencies[index].timeline || []), timelineEvent]
       };
-      
-      // Update resource status
       resources[resourceIndex] = {
         ...resources[resourceIndex],
         status: 'On Mission'
       };
-
       io.emit('emergency:update', emergencies[index]);
       io.emit('resources:update', resources);
       res.json(emergencies[index]);
@@ -251,97 +245,76 @@ async function startServer() {
     }
   });
 
-  // Socket connection
-  io.on('connection', (socket) => {
-    console.log('Authority/Citizen connected:', socket.id);
-    
-    socket.on('disconnect', () => {
-      console.log('Client disconnected');
-    });
-
-    // Simulate location updates
-    const interval = setInterval(() => {
-      resources = resources.map(r => {
-        if (r.status === 'On Mission') {
-          const emergency = emergencies.find(e => e.assignedResource === r.id);
-          if (emergency) {
-            const [eLat, eLng] = emergency.location;
-            const [rLat, rLng] = r.location;
-            
-            // Move 0.0005 per tick towards target
-            const speed = 0.0005;
-            const dLat = eLat - rLat;
-            const dLng = eLng - rLng;
-            const distance = Math.sqrt(dLat * dLat + dLng * dLng);
-            
-            if (distance > 0.0005) {
-              return {
-                ...r,
-                location: [
-                  rLat + (dLat / distance) * speed,
-                  rLng + (dLng / distance) * speed
-                ]
-              };
-            }
+  // Global intervals — run once for all clients, broadcast to everyone
+  setInterval(() => {
+    resources = resources.map(r => {
+      if (r.status === 'On Mission') {
+        const emergency = emergencies.find(e => e.assignedResource === r.id);
+        if (emergency) {
+          const [eLat, eLng] = emergency.location;
+          const [rLat, rLng] = r.location as [number, number];
+          const speed = 0.0005;
+          const dLat = eLat - rLat;
+          const dLng = eLng - rLng;
+          const distance = Math.sqrt(dLat * dLat + dLng * dLng);
+          if (distance > 0.0005) {
+            return {
+              ...r,
+              location: [
+                rLat + (dLat / distance) * speed,
+                rLng + (dLng / distance) * speed
+              ]
+            };
           }
         }
-        
-        // Jitter for non-mission resources
-        return {
-          ...r,
-          location: [
-            r.location[0] + (Math.random() - 0.5) * 0.0005,
-            r.location[1] + (Math.random() - 0.5) * 0.0005
-          ]
-        };
-      });
-      socket.emit('resources:update', resources);
-    }, 2000);
+      }
+      return {
+        ...r,
+        location: [
+          (r.location as [number, number])[0] + (Math.random() - 0.5) * 0.0005,
+          (r.location as [number, number])[1] + (Math.random() - 0.5) * 0.0005
+        ]
+      };
+    });
+    io.emit('resources:update', resources);
+  }, 2000);
 
-    const hospitalInterval = setInterval(() => {
-      hospitals = hospitals.map(h => {
-        const icuChange = Math.floor(Math.random() * 3) - 1; // -1, 0, or 1
-        const bedChange = Math.floor(Math.random() * 7) - 3; // -3 to 3
-        
-        const newIcu = Math.max(0, Math.min(h.icuBeds, h.availableIcu + icuChange));
-        const newBeds = Math.max(0, Math.min(h.totalBeds, h.availableBeds + bedChange));
-        
-        const loadScore = (h.icuBeds - newIcu) / h.icuBeds;
-        const load = loadScore > 0.8 ? 'High' : loadScore > 0.4 ? 'Medium' : 'Low';
-        
-        return {
-          ...h,
-          availableIcu: newIcu,
-          availableBeds: newBeds,
-          load
-        };
-      });
-      socket.emit('hospitals:update', hospitals);
-    }, 5000);
+  setInterval(() => {
+    hospitals = hospitals.map(h => {
+      const icuChange = Math.floor(Math.random() * 3) - 1;
+      const bedChange = Math.floor(Math.random() * 7) - 3;
+      const newIcu = Math.max(0, Math.min(h.icuBeds, h.availableIcu + icuChange));
+      const newBeds = Math.max(0, Math.min(h.totalBeds, h.availableBeds + bedChange));
+      const loadScore = (h.icuBeds - newIcu) / h.icuBeds;
+      const load = loadScore > 0.8 ? 'High' : loadScore > 0.4 ? 'Medium' : 'Low';
+      return { ...h, availableIcu: newIcu, availableBeds: newBeds, load };
+    });
+    io.emit('hospitals:update', hospitals);
+  }, 5000);
 
-    socket.on('close', () => {
-      clearInterval(interval);
-      clearInterval(hospitalInterval);
+  // Socket connection — send initial state on join
+  io.on('connection', (socket) => {
+    console.log('Client connected:', socket.id);
+
+    // Send full current state to newly connected client
+    socket.emit('emergencies:init', emergencies);
+    socket.emit('hospitals:init', hospitals);
+    socket.emit('resources:init', resources);
+
+    socket.on('disconnect', () => {
+      console.log('Client disconnected:', socket.id);
     });
   });
 
-  // Vite middleware for development
-  if (process.env.NODE_ENV !== 'production') {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa'
-    });
-    app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(__dirname, 'dist');
-    app.use(express.static(distPath));
-    app.get('*', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
-    });
-  }
+  // Serve built frontend
+  const distPath = path.join(__dirname, 'dist');
+  app.use(express.static(distPath));
+  app.get('*', (req, res) => {
+    res.sendFile(path.join(distPath, 'index.html'));
+  });
 
   httpServer.listen(PORT, '0.0.0.0', () => {
-    console.log(`ANEIS Intelligence Hub running on http://localhost:${PORT}`);
+    console.log(`ANEIS Intelligence Hub running on http://0.0.0.0:${PORT}`);
   });
 }
 
