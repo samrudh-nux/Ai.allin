@@ -1,0 +1,6 @@
+{
+  "name": "ANEIS: AI National Emergency Intelligence System",
+  "description": "India's real-time AI-powered emergency response, hospital resource allocation, and smart traffic control system.",
+  "requestFramePermissions": ["camera", "microphone", "geolocation"],
+  "majorCapabilities": ["Real-time Emergency Dispatch", "AI Multilingual Triage", "Hospital Bed Telemetry", "Traffic Green Corridor Management"]
+}
