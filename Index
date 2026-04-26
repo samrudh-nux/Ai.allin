@@ -1,0 +1,38 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Reset ── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body, #root { height: 100%; width: 100%; overflow: hidden; }
+body {
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  background: #f8fafc;
+  color: #334155;
+}
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar             { width: 4px; height: 4px; }
+::-webkit-scrollbar-track       { background: transparent; }
+::-webkit-scrollbar-thumb       { background: #cbd5e1; border-radius: 99px; }
+::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+/* ── Leaflet z-index fixes ── */
+.leaflet-pane         { z-index: 400 !important; }
+.leaflet-tile-pane    { z-index: 200 !important; }
+.leaflet-overlay-pane { z-index: 400 !important; }
+.leaflet-marker-pane  { z-index: 600 !important; }
+.leaflet-tooltip-pane { z-index: 650 !important; }
+.leaflet-popup-pane   { z-index: 700 !important; }
+.leaflet-top,
+.leaflet-bottom       { z-index: 800 !important; }
+.leaflet-control      { z-index: 800 !important; }
+
+/* ── Line clamp ── */
+.line-clamp-1 {
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1;
+}
