@@ -1,0 +1,403 @@
+import { 
+  PatientRiskProfile, Vitals, RiskAlert, HospitalTwin, 
+  AgentDecision, AISuggestion, AnalyticsSnapshot, AnomalyEvent,
+  SimulationMode, SimulationConfig, DepartmentLoad
+} from './types';
+
+// ─── Risk Scoring Engine ─────────────────────────────────────────────────────
+
+function scoreVitals(v: Vitals): { score: number; flags: string[] } {
+  let score = 0;
+  const flags: string[] = [];
+
+  if (v.heartRate > 130 || v.heartRate < 40) { score += 25; flags.push('Extreme heart rate'); }
+  else if (v.heartRate > 110 || v.heartRate < 55) { score += 12; flags.push('Abnormal heart rate'); }
+
+  if (v.systolicBP > 180 || v.systolicBP < 80) { score += 25; flags.push('Critical BP'); }
+  else if (v.systolicBP > 160 || v.systolicBP < 90) { score += 12; flags.push('High/Low BP'); }
+
+  if (v.oxygenSat < 88) { score += 30; flags.push('Critical hypoxia'); }
+  else if (v.oxygenSat < 93) { score += 15; flags.push('Low oxygen saturation'); }
+
+  if (v.temperature > 39.5 || v.temperature < 35) { score += 20; flags.push('Dangerous temperature'); }
+  else if (v.temperature > 38.5 || v.temperature < 36) { score += 8; flags.push('Abnormal temperature'); }
+
+  if (v.respiratoryRate > 30 || v.respiratoryRate < 8) { score += 20; flags.push('Respiratory distress'); }
+  else if (v.respiratoryRate > 24 || v.respiratoryRate < 12) { score += 10; flags.push('Abnormal breathing'); }
+
+  if (v.glucoseLevel > 300 || v.glucoseLevel < 50) { score += 20; flags.push('Glucose crisis'); }
+  else if (v.glucoseLevel > 200 || v.glucoseLevel < 70) { score += 8; flags.push('Glucose imbalance'); }
+
+  return { score: Math.min(score, 100), flags };
+}
+
+function calculateTrend(history: Vitals[]): 'rising' | 'stable' | 'falling' {
+  if (history.length < 2) return 'stable';
+  const recent = history.slice(-3);
+  const scores = recent.map(v => scoreVitals(v).score);
+  const delta = scores[scores.length - 1] - scores[0];
+  if (delta > 8) return 'rising';
+  if (delta < -8) return 'falling';
+  return 'stable';
+}
+
+function generateExplanation(flags: string[], score: number, trend: string, _patient: Partial<PatientRiskProfile>): string {
+  if (score >= 70) {
+    return `CRITICAL: Risk score ${score}/100 — ${flags.slice(0, 2).join(', ')} detected. Trend is ${trend}. Deterioration probability in next hour is HIGH. Immediate clinical review required.`;
+  }
+  if (score >= 45) {
+    return `WARNING: Score ${score}/100 — ${flags.join(', ') || 'Borderline vitals observed'}. Trend ${trend}. Monitor closely every 15 minutes. Consider escalation if no improvement.`;
+  }
+  return `STABLE: Score ${score}/100 — Vitals within acceptable range. ${flags.length > 0 ? 'Minor deviations: ' + flags.join(', ') + '.' : 'No critical flags.'} Continue standard monitoring protocol.`;
+}
+
+export function computeRiskProfile(base: Partial<PatientRiskProfile>, vitals: Vitals): PatientRiskProfile {
+  const { score, flags } = scoreVitals(vitals);
+  const history = [...(base.vitalHistory || []).slice(-9), vitals];
+  const trend = calculateTrend(history);
+  const detn1h = Math.min(score * 1.1 + (trend === 'rising' ? 12 : 0), 100);
+  const detn6h = Math.min(score * 1.3 + (trend === 'rising' ? 20 : 0), 100);
+  const confidence = 0.72 + Math.random() * 0.18;
+
+  const alerts: RiskAlert[] = flags.map((f, i) => ({
+    id: `alert-${Date.now()}-${i}`,
+    severity: score >= 70 ? 'critical' : score >= 45 ? 'warning' : 'info',
+    message: f,
+    timestamp: new Date().toISOString(),
+    acknowledged: false,
+    factor: f,
+  }));
+
+  return {
+    patientId: base.patientId || `P-${Math.floor(Math.random() * 9000 + 1000)}`,
+    name: base.name || 'Unknown',
+    age: base.age || 45,
+    ward: base.ward || 'General',
+    admitTime: base.admitTime || new Date().toISOString(),
+    diagnosis: base.diagnosis || 'Under Evaluation',
+    riskScore: score,
+    riskTrend: trend,
+    deteriorationRisk1h: Math.round(detn1h),
+    deteriorationRisk6h: Math.round(detn6h),
+    vitals,
+    vitalHistory: history,
+    aiExplanation: generateExplanation(flags, score, trend, base),
+    alerts,
+    confidenceScore: Math.round(confidence * 100) / 100,
+  };
+}
+
+// ─── Simulation Engine ───────────────────────────────────────────────────────
+
+const SIMULATION_CONFIGS: Record<SimulationMode, SimulationConfig> = {
+  normal:   { mode: 'normal',   patientInjectRate: 0.3, vitalsDriftRate: 0.5, alertFrequency: 0.1 },
+  surge:    { mode: 'surge',    patientInjectRate: 1.2, vitalsDriftRate: 1.5, alertFrequency: 0.4 },
+  disaster: { mode: 'disaster', patientInjectRate: 3.0, vitalsDriftRate: 3.0, alertFrequency: 1.0 },
+};
+
+export function getSimConfig(mode: SimulationMode): SimulationConfig {
+  return SIMULATION_CONFIGS[mode];
+}
+
+function drift(value: number, center: number, _range: number, rate: number): number {
+  const noise = (Math.random() - 0.5) * 2 * rate;
+  const pull = (center - value) * 0.05;
+  return Math.round((value + noise + pull) * 10) / 10;
+}
+
+export function simulateVitals(current: Vitals, mode: SimulationMode, deteriorating = false): Vitals {
+  const r = SIMULATION_CONFIGS[mode].vitalsDriftRate;
+  const det = deteriorating ? 2 : 1;
+  return {
+    heartRate:       Math.max(30, Math.min(200, drift(current.heartRate, deteriorating ? 115 : 78, 20, r * det))),
+    systolicBP:      Math.max(60, Math.min(220, drift(current.systolicBP, deteriorating ? 165 : 120, 15, r * det))),
+    oxygenSat:       Math.max(70, Math.min(100, drift(current.oxygenSat, deteriorating ? 89 : 97, 3, r * det))),
+    temperature:     Math.max(34, Math.min(42,  drift(current.temperature, deteriorating ? 38.8 : 36.8, 0.5, r * 0.3 * det))),
+    respiratoryRate: Math.max(6,  Math.min(45,  drift(current.respiratoryRate, deteriorating ? 26 : 16, 4, r * det))),
+    glucoseLevel:    Math.max(40, Math.min(400, drift(current.glucoseLevel, deteriorating ? 220 : 100, 20, r * det))),
+    timestamp: new Date().toISOString(),
+  };
+}
+
+export function generateBaseVitals(): Vitals {
+  return {
+    heartRate:       72 + Math.random() * 20 - 10,
+    systolicBP:      120 + Math.random() * 20 - 10,
+    oxygenSat:       97 + Math.random() * 2,
+    temperature:     36.8 + Math.random() * 0.6 - 0.3,
+    respiratoryRate: 16 + Math.random() * 4 - 2,
+    glucoseLevel:    95 + Math.random() * 30 - 15,
+    timestamp: new Date().toISOString(),
+  };
+}
+
+// ─── Patient Pool Generator ──────────────────────────────────────────────────
+
+const NAMES = ['Rahul Sharma','Priya Nair','Arun Kumar','Deepa Reddy','Mohammed Ali','Sunita Patel','Vijay Singh','Kavitha Rao','Arjun Mehta','Lakshmi Iyer','Ravi Krishnan','Ananya Das','Suresh Bhat','Meena Pillai','Kartik Joshi'];
+const WARDS = ['ICU','Cardiology','Emergency','Neurology','Orthopedics','General'];
+const DIAGNOSES = ['Acute MI','Septic Shock','Polytrauma','Stroke','Diabetic Ketoacidosis','Respiratory Failure','Hypertensive Crisis','Pulmonary Embolism'];
+
+export function generatePatient(id?: string): PatientRiskProfile {
+  const deteriorating = Math.random() < 0.3;
+  const vitals = generateBaseVitals();
+  if (deteriorating) {
+    vitals.heartRate += 35;
+    vitals.oxygenSat -= 8;
+    vitals.systolicBP += 40;
+    vitals.respiratoryRate += 10;
+  }
+  const base: Partial<PatientRiskProfile> = {
+    patientId: id || `P-${Math.floor(1000 + Math.random() * 9000)}`,
+    name: NAMES[Math.floor(Math.random() * NAMES.length)],
+    age: Math.floor(25 + Math.random() * 65),
+    ward: WARDS[Math.floor(Math.random() * WARDS.length)],
+    admitTime: new Date(Date.now() - Math.random() * 86400000 * 3).toISOString(),
+    diagnosis: DIAGNOSES[Math.floor(Math.random() * DIAGNOSES.length)],
+    vitalHistory: [],
+  };
+  return computeRiskProfile(base, vitals);
+}
+
+// ─── Hospital Digital Twin ───────────────────────────────────────────────────
+
+const DEPARTMENTS: DepartmentLoad[] = [
+  { name: 'Emergency',  capacity: 50, current: 41, waitTime: 32 },
+  { name: 'ICU',        capacity: 20, current: 17, waitTime: 0  },
+  { name: 'Cardiology', capacity: 40, current: 28, waitTime: 15 },
+  { name: 'Neurology',  capacity: 30, current: 19, waitTime: 22 },
+  { name: 'Pediatrics', capacity: 25, current: 12, waitTime: 8  },
+  { name: 'Orthopedics',capacity: 35, current: 20, waitTime: 45 },
+];
+
+export function generateHospitalTwin(hospitalId: string, mode: SimulationMode): HospitalTwin {
+  const surge = mode === 'surge' ? 1.3 : mode === 'disaster' ? 1.7 : 1.0;
+  const baseFill = 0.72 * surge;
+  const icuFill  = 0.82 * surge;
+
+  const departments = DEPARTMENTS.map(d => ({
+    ...d,
+    current:  Math.min(d.capacity, Math.round(d.current * surge + (Math.random() - 0.5) * 3)),
+    waitTime: Math.round(d.waitTime * surge),
+  }));
+
+  const suggestions: AISuggestion[] = [];
+
+  if (icuFill > 0.9) {
+    suggestions.push({
+      id: `sug-${Date.now()}-1`,
+      module: 'facility',
+      priority: 'urgent',
+      action: 'Transfer 3 stable ICU patients to High Dependency Unit',
+      reasoning: 'ICU occupancy at 90%+. HDU has capacity. Transfer reduces bottleneck within 45min.',
+      confidence: 0.87,
+      impact: 'Frees 3 ICU beds, reduces critical patient wait by ~40 minutes',
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  if (mode !== 'normal') {
+    suggestions.push({
+      id: `sug-${Date.now()}-2`,
+      module: 'facility',
+      priority: 'high',
+      action: `Activate ${mode === 'disaster' ? 'Mass Casualty' : 'Surge'} Protocol`,
+      reasoning: `Simulation mode: ${mode}. Expected inflow ${mode === 'disaster' ? '3x' : '1.5x'} normal rate.`,
+      confidence: 0.93,
+      impact: 'Pre-positions staff, opens overflow wards, notifies backup teams',
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  return {
+    id: hospitalId,
+    name: 'ANEIS Regional Command Hospital',
+    currentOccupancy:      Math.min(99, Math.round(baseFill * 100)),
+    icuOccupancy:          Math.min(99, Math.round(icuFill * 100)),
+    predictedOccupancy1h:  Math.min(99, Math.round((baseFill + 0.05 * surge) * 100)),
+    predictedOccupancy6h:  Math.min(99, Math.round((baseFill + 0.15 * surge) * 100)),
+    patientInflow:         Math.round((4 + Math.random() * 3) * surge),
+    patientOutflow:        Math.round(3 + Math.random() * 2),
+    staffOnDuty:           Math.round(120 / surge),
+    staffRequired:         140,
+    oxygenLevel:           Math.max(20, Math.round(85 - (surge - 1) * 30 + Math.random() * 10)),
+    ventilators:           { total: 24, inUse: Math.round(16 * surge) },
+    bloodBanks:            { 'O+': Math.round(40 - surge * 10), 'A+': Math.round(30 - surge * 8), 'B+': Math.round(25 - surge * 6), 'AB+': Math.round(15 - surge * 3) },
+    aiSuggestions: suggestions,
+    departments,
+  };
+}
+
+// ─── AI Operations Commander ─────────────────────────────────────────────────
+
+export function runAgentDecisions(mode: SimulationMode, twin: HospitalTwin, patients: PatientRiskProfile[]): AgentDecision[] {
+  const decisions: AgentDecision[] = [];
+  const critical = patients.filter(p => p.riskScore >= 70);
+  const icuPct   = twin.icuOccupancy;
+  const surge    = mode !== 'normal';
+
+  if (icuPct > 85) {
+    decisions.push({
+      agentId: 'bed-alloc-01', agentType: 'BedAllocation',
+      decision: `Reallocate ${Math.round((icuPct - 80) / 5)} ICU beds from elective post-ops to critical admissions`,
+      reasoning: `ICU at ${icuPct}%. ${critical.length} critical patients need beds. Elective recovery patients eligible for step-down.`,
+      confidence: 0.89, priority: 1, status: 'pending',
+      timestamp: new Date().toISOString(),
+      impact: `+${Math.round((icuPct - 80) / 5)} ICU beds available within 30 minutes`,
+    });
+  }
+
+  const staffGap = twin.staffRequired - twin.staffOnDuty;
+  if (staffGap > 10 || surge) {
+    decisions.push({
+      agentId: 'staff-sched-01', agentType: 'StaffScheduling',
+      decision: `Call in ${Math.max(staffGap, surge ? 20 : 10)} additional staff. Prioritize ICU nurses and ER physicians.`,
+      reasoning: `Current staff: ${twin.staffOnDuty}. Required: ${twin.staffRequired}. Gap of ${staffGap}. ${mode} mode active.`,
+      confidence: 0.82, priority: 2, status: 'pending',
+      timestamp: new Date().toISOString(),
+      impact: 'Reduces patient-to-nurse ratio to safe levels within 2 hours',
+    });
+  }
+
+  if (critical.length > 0) {
+    const topCritical = [...critical].sort((a, b) => b.riskScore - a.riskScore)[0];
+    decisions.push({
+      agentId: 'emerg-route-01', agentType: 'EmergencyRouting',
+      decision: `PRIORITY ROUTE: Patient ${topCritical.name} (Score: ${topCritical.riskScore}) → ICU Bay 3`,
+      reasoning: `Highest risk patient. ${topCritical.aiExplanation.split('.')[0]}. Nearest available ICU slot identified.`,
+      confidence: 0.94, priority: 1, status: 'executing',
+      timestamp: new Date().toISOString(),
+      impact: 'Reduces time-to-critical-care by ~8 minutes vs. standard triage',
+    });
+  }
+
+  if (twin.oxygenLevel < 40) {
+    decisions.push({
+      agentId: 'resource-opt-01', agentType: 'ResourceOptimizer',
+      decision: 'URGENT: Request oxygen resupply. Notify O2 vendor. Activate conservation protocol.',
+      reasoning: `Oxygen tanks at ${twin.oxygenLevel}%. At current consumption rate, critically low in ~${Math.round(twin.oxygenLevel / 5)} hours.`,
+      confidence: 0.97, priority: 1, status: 'pending',
+      timestamp: new Date().toISOString(),
+      impact: 'Prevents O2 shortage for ventilated patients',
+    });
+  }
+
+  return decisions;
+}
+
+// ─── Natural Language Command Parser ────────────────────────────────────────
+
+export function parseNLCommand(input: string, twin: HospitalTwin, patients: PatientRiskProfile[], agents: AgentDecision[]): string {
+  const q = input.toLowerCase();
+
+  if (q.includes('critical') || q.includes('worst') || q.includes('dangerous')) {
+    const top3 = [...patients].sort((a, b) => b.riskScore - a.riskScore).slice(0, 3);
+    return `**Top 3 Critical Patients:**\n${top3.map((p, i) =>
+      `${i + 1}. **${p.name}** — Risk Score: **${p.riskScore}/100** | ${p.diagnosis} | ${p.ward}\n   → ${p.aiExplanation.split('.')[0]}.`
+    ).join('\n')}`;
+  }
+
+  if (q.includes('icu') || q.includes('bed')) {
+    return `**ICU Status:**\n- Occupancy: **${twin.icuOccupancy}%** ${twin.icuOccupancy > 85 ? '⚠️ CRITICAL' : '✓'}\n- Ventilators in use: **${twin.ventilators.inUse}/${twin.ventilators.total}**\n- Predicted 6h occupancy: **${twin.predictedOccupancy6h}%**\n\n**AI Recommendation:** ${twin.aiSuggestions[0]?.action || 'No urgent action required.'}`;
+  }
+
+  if (q.includes('staff') || q.includes('nurse') || q.includes('doctor')) {
+    const staffDecision = agents.find(a => a.agentType === 'StaffScheduling');
+    return `**Staff Intelligence:**\n- On duty: **${twin.staffOnDuty}** | Required: **${twin.staffRequired}**\n- Gap: **${twin.staffRequired - twin.staffOnDuty}** personnel\n\n${staffDecision ? `**Agent Decision:** ${staffDecision.decision}\n- Confidence: ${Math.round(staffDecision.confidence * 100)}%\n- Impact: ${staffDecision.impact}` : 'Staffing levels nominal.'}`;
+  }
+
+  if (q.includes('bottleneck') || q.includes('problem') || q.includes('issue')) {
+    const depts = [...twin.departments].sort((a, b) => (b.current / b.capacity) - (a.current / a.capacity));
+    const top = depts[0];
+    return `**Bottleneck Analysis:**\n- Primary bottleneck: **${top.name}** (${Math.round(top.current / top.capacity * 100)}% capacity, ${top.waitTime}min wait)\n- Secondary: **${depts[1]?.name}** (${Math.round((depts[1]?.current ?? 0) / (depts[1]?.capacity ?? 1) * 100)}%)\n\n**Root Cause:** High patient inflow (${twin.patientInflow}/hr) with outflow of only ${twin.patientOutflow}/hr.\n\n**Recommended Action:** ${twin.aiSuggestions[0]?.action || 'Monitor and escalate if ratio deteriorates.'}`;
+  }
+
+  if (q.includes('oxygen') || q.includes('supply') || q.includes('resource')) {
+    return `**Resource Status:**\n- Oxygen: **${twin.oxygenLevel}%** ${twin.oxygenLevel < 40 ? '⚠️ LOW' : '✓'}\n- Ventilators: **${twin.ventilators.inUse}/${twin.ventilators.total}** in use\n- Blood Bank: O+: ${twin.bloodBanks['O+']}u | A+: ${twin.bloodBanks['A+']}u | B+: ${twin.bloodBanks['B+']}u`;
+  }
+
+  if (q.includes('action') || q.includes('do now') || q.includes('recommend') || q.includes('what should')) {
+    const urgentAgent = agents.filter(a => a.priority === 1).slice(0, 2);
+    if (urgentAgent.length === 0) return '**System Status: All operations nominal.** No urgent actions required at this time.';
+    return `**Immediate Actions Required:**\n${urgentAgent.map((a, i) =>
+      `${i + 1}. **[${a.agentType}]** ${a.decision}\n   → Confidence: ${Math.round(a.confidence * 100)}% | Impact: ${a.impact}`
+    ).join('\n\n')}`;
+  }
+
+  if (q.includes('predict') || q.includes('next') || q.includes('forecast')) {
+    return `**6-Hour Forecast:**\n- Bed occupancy: **${twin.predictedOccupancy6h}%** (currently ${twin.currentOccupancy}%)\n- ICU occupancy: **${twin.predictedOccupancy1h}%** in 1h\n- Patient inflow rate: **${twin.patientInflow}/hr**\n- At-risk patients trending worse: **${patients.filter(p => p.riskTrend === 'rising').length}**\n\n⚠️ ${twin.predictedOccupancy6h > 90 ? 'SURGE WARNING: Capacity breach predicted in 6h. Activate surge protocol now.' : 'System within manageable parameters for next 6 hours.'}`;
+  }
+
+  const critCount = patients.filter(p => p.riskScore >= 70).length;
+  return `**ANEIS System Overview:**\n- Total monitored patients: **${patients.length}**\n- Critical (score ≥ 70): **${critCount}**\n- Hospital occupancy: **${twin.currentOccupancy}%**\n- ICU occupancy: **${twin.icuOccupancy}%**\n- Active agent decisions: **${agents.filter(a => a.status === 'pending').length}**\n- Oxygen supply: **${twin.oxygenLevel}%**\n\nAsk me: "Who is critical?", "What's the bottleneck?", "Optimize ICU", "Predict next 6 hours", "What should we do now?"`;
+}
+
+// ─── Analytics Engine ────────────────────────────────────────────────────────
+
+export function computeAnalytics(patients: PatientRiskProfile[], twin: HospitalTwin, history: AnalyticsSnapshot[]): AnalyticsSnapshot {
+  const criticalCount = patients.filter(p => p.riskScore >= 70).length;
+  const avgUrgency    = patients.length ? patients.reduce((a, p) => a + p.riskScore, 0) / patients.length : 0;
+  const mortalityRisk = Math.min(1, (criticalCount * 0.12 + avgUrgency * 0.005));
+  const systemLoad    = (twin.currentOccupancy / 100 + twin.icuOccupancy / 100) / 2;
+  const anomalyScore  = systemLoad > 0.85 ? 0.8 + Math.random() * 0.2 : Math.random() * 0.3;
+
+  const bottlenecks: string[] = [];
+  if (twin.icuOccupancy > 85)                           bottlenecks.push('ICU at capacity');
+  if (twin.staffOnDuty < twin.staffRequired * 0.85)     bottlenecks.push('Staff shortage');
+  if (twin.oxygenLevel < 40)                            bottlenecks.push('Oxygen supply critical');
+  if (twin.patientInflow > twin.patientOutflow * 1.5)   bottlenecks.push('Patient accumulation spike');
+
+  void history; // suppress unused warning
+
+  return {
+    timestamp:        new Date().toISOString(),
+    totalEmergencies: patients.length,
+    criticalCount,
+    resolvedCount:    Math.round(patients.length * 0.3),
+    avgResponseTime:  8 + Math.random() * 6,
+    avgUrgencyScore:  Math.round(avgUrgency),
+    mortalityRisk:    Math.round(mortalityRisk * 1000) / 1000,
+    systemLoad:       Math.round(systemLoad * 100) / 100,
+    anomalyScore:     Math.round(anomalyScore * 100) / 100,
+    bottlenecks,
+    predictions: {
+      next1h:  criticalCount + Math.round(twin.patientInflow * 0.3),
+      next6h:  criticalCount + Math.round(twin.patientInflow * 1.2),
+      next24h: criticalCount + Math.round(twin.patientInflow * 3),
+    },
+  };
+}
+
+export function detectAnomalies(history: AnalyticsSnapshot[]): AnomalyEvent[] {
+  if (history.length < 3) return [];
+  const anomalies: AnomalyEvent[] = [];
+  const recent = history.slice(-5);
+  const latest = recent[recent.length - 1];
+  const prev   = recent[recent.length - 2];
+
+  if (latest && prev) {
+    if (latest.criticalCount > prev.criticalCount * 1.5) {
+      anomalies.push({
+        id: `anm-${Date.now()}-1`, type: 'critical_cluster', severity: 'critical',
+        description: `Critical patient count surged ${Math.round((latest.criticalCount / prev.criticalCount - 1) * 100)}% in last cycle`,
+        affectedArea: 'ICU / Emergency', detectedAt: new Date().toISOString(), confidence: 0.91,
+      });
+    }
+    if (latest.anomalyScore > 0.7) {
+      anomalies.push({
+        id: `anm-${Date.now()}-2`, type: 'surge', severity: 'warning',
+        description: `System load anomaly detected. Score: ${Math.round(latest.anomalyScore * 100)}%`,
+        affectedArea: 'System-wide', detectedAt: new Date().toISOString(), confidence: 0.78,
+      });
+    }
+    if (latest.bottlenecks.length > prev.bottlenecks.length) {
+      anomalies.push({
+        id: `anm-${Date.now()}-3`, type: 'bottleneck', severity: 'warning',
+        description: `New bottleneck detected: ${latest.bottlenecks[latest.bottlenecks.length - 1]}`,
+        affectedArea: latest.bottlenecks[latest.bottlenecks.length - 1],
+        detectedAt: new Date().toISOString(), confidence: 0.84,
+      });
+    }
+  }
+
+  return anomalies;
+}
