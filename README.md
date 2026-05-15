@@ -26,16 +26,9 @@ short_description: Government of India · AI-Powered Real-Time Emergency Intelli
 <br/>
 
 [![Live Demo](https://img.shields.io/badge/🟢%20LIVE%20DEMO-HuggingFace%20Space-FF9D00?style=for-the-badge&logo=huggingface&logoColor=white)](https://huggingface.co/spaces/samrudh-nux/Anesi-2.0)
-[![Files](https://img.shields.io/badge/📁%20SOURCE%20CODE-View%20Files-2563eb?style=for-the-badge&logo=github&logoColor=white)](https://huggingface.co/spaces/samrudh-nux/Anesi-2.0/tree/main)
-[![Commits](https://img.shields.io/badge/🔖%2048%20COMMITS-History-6366f1?style=for-the-badge)](https://huggingface.co/spaces/samrudh-nux/Anesi-2.0/commits/main)
 [![Community](https://img.shields.io/badge/💬%20COMMUNITY-Discussions-10b981?style=for-the-badge)](https://huggingface.co/spaces/samrudh-nux/Anesi-2.0/discussions)
 
 <br/>
-
-![Digital India](https://img.shields.io/badge/Digital%20India-Initiative-FF6B00?style=flat-square)
-![MEITY](https://img.shields.io/badge/MEITY-Aligned-1e40af?style=flat-square)
-![ISO 27001](https://img.shields.io/badge/ISO-27001%20Security-16a34a?style=flat-square)
-![AI Powered](https://img.shields.io/badge/AI-Powered-7c3aed?style=flat-square)
 
 </div>
 
